@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import urllib.parse # 引入 URL 解码库
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -67,9 +68,13 @@ def run():
             # 1. 注入 Cookies
             formatted_cookies = []
             for c in cookies_to_add:
+                raw_value = c["value"]
+                # 核心修复：对 cookie 的 value 进行 URL 解码，还原 %3D 为 =，防止 Playwright 进行二次编码导致 403 报错
+                decoded_value = urllib.parse.unquote(raw_value)
+                
                 fc = {
                     "name": c["name"],
-                    "value": c["value"],
+                    "value": decoded_value,
                     "domain": c["domain"],
                     "path": c.get("path", "/")
                 }
@@ -90,7 +95,7 @@ def run():
                 formatted_cookies.append(fc)
             
             context.add_cookies(formatted_cookies)
-            print("Cookie 注入成功！")
+            print("Cookie 注入并解码成功！")
 
             # 2. 注入 LocalStorage
             if local_storage_to_add:
@@ -125,7 +130,7 @@ def run():
             browser.close()
             return
 
-        # 3. 核心逻辑：自动检测是否已经达到了 6 小时限制（波兰语特征词）
+        # 3. 检测是否已经达到了 6 小时限制（波兰语特征词）
         page_text = page.locator("body").text_content() or ""
         if "Nie możesz przedłużyć" in page_text or "niedawno" in page_text:
             print("检测到限制提示：当前服务器已续期满6小时上限。结束本次运行。")
@@ -133,15 +138,14 @@ def run():
             return
 
         # 4. 如果没有到上限，安全寻找并点击续期按钮
-        # 精确限定选择器文本，确保绝不误触旁边的红色删机按钮
         renew_btn = page.locator("a:has-text('DODAJ 6 GODZIN'), button:has-text('DODAJ 6 GODZIN'), [class*='blue']:has-text('DODAJ 6 GODZIN')").first
         
         if renew_btn.is_visible() and renew_btn.is_enabled():
             print("找到续期按钮，正在点击...")
             renew_btn.click()
-            page.wait_for_timeout(10000) # 等待 10 秒确认反馈结果
+            page.wait_for_timeout(10000) # 等待 10 秒
             
-            # 重新截图并保存
+            # 重新截图
             page.screenshot(path="icehost_debug_screenshot.png")
             
             # 二次检测结果
