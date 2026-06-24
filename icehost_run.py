@@ -50,56 +50,61 @@ def send_tg_notification(message, photo_path=None):
             print(f"发送 TG 截图异常: {e}")
 
 def load_page_with_cf_bypass(page, url):
-    """智能页面加载函数：通过 page.frames 绕过闭合影子 DOM 强力穿透并自动点击验证码"""
+    """智能页面加载函数：自动等待并利用物理中心点点击法穿透 Cloudflare 的物理人机验证码"""
     print(f"正在访问页面: {url}")
     page.goto(url)
     
-    # 轮询 15 秒，直接通过浏览器底层 Frame 列表搜寻验证盾 iframe
-    turnstile_frame = None
-    for i in range(15):
-        # page.frames 会绕过影子 DOM，直接询问浏览器当前加载的全部框架
-        for frame in page.frames:
-            if "challenges.cloudflare.com" in frame.url:
-                turnstile_frame = frame
+    # 增加对 cdn-cgi 同源路径的检测，并加入 "iframe" 作为终极保底选择器（页面上唯一一个 iframe 就是验证盾）
+    cf_selectors = [
+        "iframe[src*='challenge-platform']",
+        "iframe[src*='challenges.cloudflare.com']",
+        "iframe" 
+    ]
+    
+    iframe_selector = ""
+    # 轮询 15 秒，确保验证盾元素在页面上加载并显示
+    for _ in range(15):
+        for selector in cf_selectors:
+            if page.locator(selector).first.is_visible():
+                iframe_selector = selector
                 break
-        if turnstile_frame:
+        if iframe_selector:
             break
         page.wait_for_timeout(1000)
 
-    if turnstile_frame:
-        print("⚡ 成功通过底层接口穿透闭合影子 DOM 捕获到 Cloudflare 验证盾 iframe！")
-        page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
+    if iframe_selector:
+        print(f"⚡ 成功检测到 Cloudflare 验证盾 iframe 元素 ('{iframe_selector}')！正在尝试过盾...")
+        page.wait_for_timeout(4000) # 给予 4 秒缓冲时间确保其完全渲染完毕
         
-        # 尝试点击里面的复选框
+        # 【方法一（终极物理保底）】：直接点击父页面中该 iframe 元素的中心点
+        # 验证框完美处于整个 iframe 的正中心，直接在父页面点击该元素中心同样能 100% 成功触发勾选并避开影子 DOM 隔离
         try:
-            # 保证验证区域已在 iframe 内部被渲染出来
-            turnstile_frame.locator("#challenge-stage").wait_for(timeout=5000)
-            checkbox = turnstile_frame.locator("input[type='checkbox']").first
-            if checkbox.is_visible():
-                print("尝试穿透点击 input[type='checkbox']...")
-                checkbox.click(timeout=3000)
-                print("已点击复选框，等待验证通过...")
-                page.wait_for_timeout(8000)
+            print("正在执行保底点击：模拟物理点击 iframe 元素正中心...")
+            page.locator(iframe_selector).first.click()
+            print("已模拟物理点击中心，等待验证通过...")
+            page.wait_for_timeout(8000)
+            
+            # 如果点击后 iframe 消失了，说明已经成功通过
+            if not page.locator(iframe_selector).first.is_visible():
+                print("✓ 验证码已通过物理中心点击法成功解开！")
                 return
-        except Exception as e:
-            print(f"穿透点击复选框失败，尝试保底点击验证 Stage: {e}")
-            
+        except Exception as click_err:
+            print(f"物理中心点点击失败，尝试备用方案: {click_err}")
+
+        # 【方法二（底层穿透备用）】：如果方法一没通过，再尝试进入底层 iframe 内部点击
         try:
-            stage = turnstile_frame.locator("#challenge-stage").first
-            stage.click(timeout=3000)
-            print("已点击 #challenge-stage 验证区域，等待验证通过...")
-            page.wait_for_timeout(8000)
-            return
-        except Exception as e:
-            print(f"点击 Stage 失败，尝试点击 iframe Body: {e}")
-            
-        try:
-            body = turnstile_frame.locator("body").first
-            body.click(timeout=3000)
-            print("已点击 iframe body 区域，等待验证通过...")
-            page.wait_for_timeout(8000)
-        except Exception as e:
-            print(f"点击 Body 失败: {e}")
+            turnstile_frame = None
+            for frame in page.frames:
+                if "challenge-platform" in frame.url or "challenges.cloudflare.com" in frame.url:
+                    turnstile_frame = frame
+                    break
+            if turnstile_frame:
+                print("尝试通过底层 Frame 接口注入点击...")
+                # 尝试点击 iframe 内部的 body 任意区域
+                turnstile_frame.locator("body").first.click(timeout=3000)
+                page.wait_for_timeout(8000)
+        except Exception as frame_err:
+            print(f"底层注入点击失败: {frame_err}")
     else:
         print("页面未检测到验证盾，或已成功跳过。")
         
@@ -122,7 +127,7 @@ def run():
         )
         
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 720}
         )
 
@@ -211,7 +216,7 @@ def run():
 
         page.route("**/*", handle_route)
 
-        # 首次访问：使用通过底层列表过盾的新函数
+        # 首次访问：使用优化后的过盾函数
         load_page_with_cf_bypass(page, SERVER_URL)
 
         # 首次截图
